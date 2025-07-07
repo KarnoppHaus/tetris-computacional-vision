@@ -1,7 +1,7 @@
 // Copyright 2019 The MediaPipe Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
+// You may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
 //
 //      http://www.apache.org/licenses/LICENSE-2.0
@@ -13,8 +13,13 @@
 // limitations under the License.
 //
 // An example of sending OpenCV webcam frames into a MediaPipe graph.
-#include <cstdlib>
 
+#include <cstdlib>
+//libs para integração
+#include <fstream>
+#include <iostream>
+#include <cmath>
+//
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/absl_log.h"
@@ -29,17 +34,25 @@
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/util/resource_util.h"
 
-//mexi_here
+//Landmark protobuf
 #include "mediapipe/framework/formats/landmark.pb.h"
-#include "mediapipe/framework/formats/landmark.pb.h"
-
 
 constexpr char kInputStream[] = "input_video";
 constexpr char kOutputStream[] = "output_video";
 constexpr char kWindowName[] = "MediaPipe";
-//mexi here
 constexpr char kLandmarksStream[] = "landmarks";
 
+//função para enviar comando via FIFO
+//basicamente cria um fifo que fica publicando o comando enquanto o tetris le esse comando
+void sendCommandToTetris(const std::string& command) {
+    static std::ofstream fifo("/tmp/tetris_pipe", std::ios::out | std::ios::app);
+    if (fifo.is_open()) {
+        fifo << command << std::endl;
+        fifo.flush();
+    } else {
+        std::cerr << "Erro ao abrir o pipe para escrever.\n";
+    }
+}
 
 ABSL_FLAG(std::string, calculator_graph_config_file, "",
           "Name of file containing text format CalculatorGraphConfig proto.");
@@ -89,16 +102,14 @@ absl::Status RunMPPGraph() {
   ABSL_LOG(INFO) << "Start running the calculator graph.";
   MP_ASSIGN_OR_RETURN(mediapipe::OutputStreamPoller poller,
                       graph.AddOutputStreamPoller(kOutputStream));
-
   MP_ASSIGN_OR_RETURN(mediapipe::OutputStreamPoller landmark_poller,
-                    graph.AddOutputStreamPoller(kLandmarksStream));
+                      graph.AddOutputStreamPoller(kLandmarksStream));
 
   MP_RETURN_IF_ERROR(graph.StartRun({}));
 
   ABSL_LOG(INFO) << "Start grabbing and processing frames.";
   bool grab_frames = true;
   while (grab_frames) {
-    // Capture opencv camera or video frame.
     cv::Mat camera_frame_raw;
     capture >> camera_frame_raw;
     if (camera_frame_raw.empty()) {
@@ -112,49 +123,92 @@ absl::Status RunMPPGraph() {
     cv::Mat camera_frame;
     cv::cvtColor(camera_frame_raw, camera_frame, cv::COLOR_BGR2RGB);
     if (!load_video) {
-      cv::flip(camera_frame, camera_frame, /*flipcode=HORIZONTAL*/ 1);
+      cv::flip(camera_frame, camera_frame, 1);  // Flip horizontal for selfie view
     }
 
-    // Wrap Mat into an ImageFrame.
     auto input_frame = absl::make_unique<mediapipe::ImageFrame>(
         mediapipe::ImageFormat::SRGB, camera_frame.cols, camera_frame.rows,
         mediapipe::ImageFrame::kDefaultAlignmentBoundary);
     cv::Mat input_frame_mat = mediapipe::formats::MatView(input_frame.get());
     camera_frame.copyTo(input_frame_mat);
 
-    // Send image packet into the graph.
     size_t frame_timestamp_us =
         (double)cv::getTickCount() / (double)cv::getTickFrequency() * 1e6;
     MP_RETURN_IF_ERROR(graph.AddPacketToInputStream(
         kInputStream, mediapipe::Adopt(input_frame.release())
                           .At(mediapipe::Timestamp(frame_timestamp_us))));
 
-    // Get the graph result packet, or stop if that fails.
     mediapipe::Packet packet;
     if (!poller.Next(&packet)) break;
-      //mexi_here
-      mediapipe::Packet landmark_packet;
-      if (landmark_poller.QueueSize() > 0) {
-        if (landmark_poller.Next(&landmark_packet)) {
-          auto& landmarks = landmark_packet.Get<std::vector<mediapipe::NormalizedLandmarkList>>();
-          for (int hand_i = 0; hand_i < landmarks.size(); ++hand_i) {
-            const auto& hand_landmarks = landmarks[hand_i];
-            std::cout << "Mão " << hand_i << ":\n";
-            for (int i = 0; i < hand_landmarks.landmark_size(); ++i) {
-              const auto& lm = hand_landmarks.landmark(i);
-              std::cout << "  Ponto " << i << ": x=" << lm.x()
-                        << ", y=" << lm.y()
-                        << ", z=" << lm.z() << "\n";
+
+    mediapipe::Packet landmark_packet;
+    if (landmark_poller.QueueSize() > 0) {
+      if (landmark_poller.Next(&landmark_packet)) {
+        auto& landmarks = landmark_packet.Get<std::vector<mediapipe::NormalizedLandmarkList>>();
+        //logica para detecção a partir daqui
+        //deixar melhor e mais precisa
+        for (int hand_i = 0; hand_i < landmarks.size(); ++hand_i) {
+          const auto& hand_landmarks = landmarks[hand_i];
+
+          const auto& palma = hand_landmarks.landmark(0);
+          const auto& indicador = hand_landmarks.landmark(8);
+          const auto& polegar = hand_landmarks.landmark(4);
+          const auto& medio = hand_landmarks.landmark(12);
+          const auto& anelar = hand_landmarks.landmark(16);
+          const auto& mindinho = hand_landmarks.landmark(20);
+
+          auto distancia = [](const auto& a, const auto& b) {
+            float dx = a.x() - b.x();
+            float dy = a.y() - b.y();
+            float dz = a.z() - b.z();
+            return std::sqrt(dx * dx + dy * dy + dz * dz);
+          };
+
+          float palmaIndicador = distancia(palma, indicador);
+          float palmaPolegar = distancia(palma, polegar);
+          float palmaMedio = distancia(palma, medio);
+          float palmaAnelar = distancia(palma, anelar);
+          float palmaMindinho = distancia(palma, mindinho);
+
+          int dedosEstendidos = 0;
+          if (palmaIndicador > 0.2f) dedosEstendidos++;
+          if (palmaMedio > 0.2f) dedosEstendidos++;
+          if (palmaAnelar > 0.2f) dedosEstendidos++;
+          if (palmaMindinho > 0.2f) dedosEstendidos++;
+          if (palmaPolegar > 0.2f) dedosEstendidos++;
+
+          // Gesto: mão aberta -> DROP
+          if (dedosEstendidos >= 5) {
+            sendCommandToTetris("DROP");//comando q publica no FIFO
+            continue;
+          }
+
+          // Gesto: mão fechada -> ROTATE
+          if (dedosEstendidos == 0) {
+            sendCommandToTetris("ROTATE");
+            continue;
+          }
+
+          // Gesto: apenas indicador estendido para esquerda/direita
+          if (palmaIndicador > 0.2f &&
+              palmaMedio < 0.1f &&
+              palmaAnelar < 0.1f &&
+              palmaMindinho < 0.1f) {
+            if (indicador.x() < palma.x() - 0.05f) {
+              sendCommandToTetris("LEFT");
+            } else if (indicador.x() > palma.x() + 0.05f) {
+              sendCommandToTetris("RIGHT");
             }
           }
         }
       }
+    }
 
     auto& output_frame = packet.Get<mediapipe::ImageFrame>();
 
-    // Convert back to opencv for display or saving.
     cv::Mat output_frame_mat = mediapipe::formats::MatView(&output_frame);
     cv::cvtColor(output_frame_mat, output_frame_mat, cv::COLOR_RGB2BGR);
+
     if (save_video) {
       if (!writer.isOpened()) {
         ABSL_LOG(INFO) << "Prepare video writer.";
@@ -166,7 +220,6 @@ absl::Status RunMPPGraph() {
       writer.write(output_frame_mat);
     } else {
       cv::imshow(kWindowName, output_frame_mat);
-      // Press any key to exit.
       const int pressed_key = cv::waitKey(5);
       if (pressed_key >= 0 && pressed_key != 255) grab_frames = false;
     }
@@ -185,8 +238,7 @@ int main(int argc, char** argv) {
   if (!run_status.ok()) {
     ABSL_LOG(ERROR) << "Failed to run the graph: " << run_status.message();
     return EXIT_FAILURE;
-  } else {
-    ABSL_LOG(INFO) << "Success!";
   }
+  ABSL_LOG(INFO) << "Success!";
   return EXIT_SUCCESS;
 }

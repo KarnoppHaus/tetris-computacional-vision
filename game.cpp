@@ -1,6 +1,12 @@
 #include "game.h"
 #include <random>
 #include <time.h>
+#include <fstream>
+#include <string>
+
+// Abre o FIFO de leitura para receber comandos externos
+std::ifstream fifo("/tmp/tetris_pipe");
+std::string gesture;
 
 Game::Game()
 {
@@ -10,6 +16,7 @@ Game::Game()
     nextBlock = GetRandomBlock();
     gameOver = false;
     score = 0;
+
     InitAudioDevice();
     music = LoadMusicStream("Sounds/music.mp3");
     PlayMusicStream(music);
@@ -63,12 +70,38 @@ void Game::Draw()
 
 void Game::HandleInput()
 {
+    static std::string lastGesture = "";
+
+    // Lê o próximo comando do FIFO, se disponível
+    if (fifo.good() && std::getline(fifo, gesture)) {
+        lastGesture = gesture;
+    }
+
     int keyPressed = GetKeyPressed();
-    if (gameOver && keyPressed != 0)
+
+    if (gameOver && (keyPressed != 0 || !lastGesture.empty()))
     {
         gameOver = false;
         Reset();
     }
+
+    // Usa o comando recebido via FIFO (gestos)
+    if (lastGesture == "LEFT") {
+        MoveBlockLeft();
+        lastGesture = "";
+    } else if (lastGesture == "RIGHT") {
+        MoveBlockRight();
+        lastGesture = "";
+    } else if (lastGesture == "DROP") {
+        MoveBlockDown();
+        UpdateScore(0, 1);
+        lastGesture = "";
+    } else if (lastGesture == "ROTATE") {
+        RotateBlock();
+        lastGesture = "";
+    }
+
+    // Também permite controle via teclado
     switch (keyPressed)
     {
     case KEY_LEFT:
