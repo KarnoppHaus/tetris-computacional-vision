@@ -19,7 +19,9 @@
 #include <fstream>
 #include <iostream>
 #include <cmath>
+#include <chrono>
 //
+
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/log/absl_log.h"
@@ -53,6 +55,22 @@ void sendCommandToTetris(const std::string& command) {
         std::cerr << "Erro ao abrir o pipe para escrever.\n";
     }
 }
+std::string lastGesture = "";
+std::map<std::string, std::chrono::steady_clock::time_point> lastCommandTime;
+int cooldown_ms = 500;  // Tempo mínimo entre comandos iguais
+float epsilon = 0.03f;  // Tolerância para evitar ruídos
+
+
+// Função auxiliar para verificar se pode enviar comando
+bool canSend(const std::string& cmd) {
+    auto now = std::chrono::steady_clock::now();
+    if (lastCommandTime.find(cmd) == lastCommandTime.end() ||
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - lastCommandTime[cmd]).count() > cooldown_ms) {
+        lastCommandTime[cmd] = now;
+        return true;
+    }
+    return false;
+}
 
 ABSL_FLAG(std::string, calculator_graph_config_file, "",
           "Name of file containing text format CalculatorGraphConfig proto.");
@@ -62,6 +80,31 @@ ABSL_FLAG(std::string, input_video_path, "",
 ABSL_FLAG(std::string, output_video_path, "",
           "Full path of where to save result (.mp4 only). "
           "If not provided, show result in a window.");
+
+void renderHUD(cv::Mat& frame, const std::string& comando, int colunaAtual) {
+    int baseY = 30;
+
+    // Fundo semi-transparente
+    cv::rectangle(frame, cv::Point(5, 5), cv::Point(300, 100), cv::Scalar(0, 0, 0), cv::FILLED);
+    cv::addWeighted(frame(cv::Rect(5, 5, 295, 95)), 0.6, frame(cv::Rect(5, 5, 295, 95)), 0.0, 0, frame(cv::Rect(5, 5, 295, 95)));
+
+    // Texto do comando atual
+    cv::putText(frame, "Comando: " + comando,
+                cv::Point(10, baseY), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 255, 255), 2);
+
+    // Texto da coluna atual
+    cv::putText(frame, "Coluna: " + std::to_string(colunaAtual),
+                cv::Point(10, baseY + 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(255, 255, 255), 2);
+
+    // Bar visual simples (estilo "indicador de energia")
+    int barLength = colunaAtual * 20;
+    cv::rectangle(frame, cv::Point(10, baseY + 60),
+                          cv::Point(10 + barLength, baseY + 75),
+                          cv::Scalar(0, 255, 0), cv::FILLED);
+    cv::rectangle(frame, cv::Point(10, baseY + 60),
+                          cv::Point(10 + 180, baseY + 75),
+                          cv::Scalar(255, 255, 255), 2);
+}
 
 absl::Status RunMPPGraph() {
   std::string calculator_graph_config_contents;
@@ -123,7 +166,7 @@ absl::Status RunMPPGraph() {
     cv::Mat camera_frame;
     cv::cvtColor(camera_frame_raw, camera_frame, cv::COLOR_BGR2RGB);
     if (!load_video) {
-      cv::flip(camera_frame, camera_frame, 1);  // Flip horizontal for selfie view
+      cv::flip(camera_frame, camera_frame, 1);  //Flip horizontal for selfie view
     }
 
     auto input_frame = absl::make_unique<mediapipe::ImageFrame>(
@@ -142,67 +185,88 @@ absl::Status RunMPPGraph() {
     if (!poller.Next(&packet)) break;
 
     mediapipe::Packet landmark_packet;
+    // Variável estática para guardar a posição da palma anterior
+    static mediapipe::NormalizedLandmark previous_palm;
+    static bool has_previous_palm = false;
+
     if (landmark_poller.QueueSize() > 0) {
       if (landmark_poller.Next(&landmark_packet)) {
         auto& landmarks = landmark_packet.Get<std::vector<mediapipe::NormalizedLandmarkList>>();
-        //logica para detecção a partir daqui
-        //deixar melhor e mais precisa
-        for (int hand_i = 0; hand_i < landmarks.size(); ++hand_i) {
-          const auto& hand_landmarks = landmarks[hand_i];
 
-          const auto& palma = hand_landmarks.landmark(0);
-          const auto& indicador = hand_landmarks.landmark(8);
-          const auto& polegar = hand_landmarks.landmark(4);
-          const auto& medio = hand_landmarks.landmark(12);
-          const auto& anelar = hand_landmarks.landmark(16);
-          const auto& mindinho = hand_landmarks.landmark(20);
+        static int currentPieceColumn = 4;  // Começa no meio das 10 colunas (0..9)
+        const int totalColumns = 10;
 
-          auto distancia = [](const auto& a, const auto& b) {
-            float dx = a.x() - b.x();
-            float dy = a.y() - b.y();
-            float dz = a.z() - b.z();
-            return std::sqrt(dx * dx + dy * dy + dz * dz);
-          };
+        for (const auto& hand_landmarks : landmarks) {
+            const mediapipe::NormalizedLandmark& palma     = hand_landmarks.landmark(0);
+            const mediapipe::NormalizedLandmark& indicador = hand_landmarks.landmark(8);
+            const mediapipe::NormalizedLandmark& polegar   = hand_landmarks.landmark(4);
 
-          float palmaIndicador = distancia(palma, indicador);
-          float palmaPolegar = distancia(palma, polegar);
-          float palmaMedio = distancia(palma, medio);
-          float palmaAnelar = distancia(palma, anelar);
-          float palmaMindinho = distancia(palma, mindinho);
+            auto distancia = [](const mediapipe::NormalizedLandmark& a, const mediapipe::NormalizedLandmark& b) {
+                float dx = a.x() - b.x();
+                float dy = a.y() - b.y();
+                float dz = a.z() - b.z();
+                return std::sqrt(dx * dx + dy * dy + dz * dz);
+            };
 
-          int dedosEstendidos = 0;
-          if (palmaIndicador > 0.2f) dedosEstendidos++;
-          if (palmaMedio > 0.2f) dedosEstendidos++;
-          if (palmaAnelar > 0.2f) dedosEstendidos++;
-          if (palmaMindinho > 0.2f) dedosEstendidos++;
-          if (palmaPolegar > 0.2f) dedosEstendidos++;
+            // ---------- ROTATE ----------
+            bool indicador_estendido = distancia(palma, indicador) > 0.20f;
+            bool polegar_estendido   = distancia(palma, polegar) > 0.20f;
+            bool polegar_lateral     = polegar.x() < palma.x() - 0.03f;
 
-          // Gesto: mão aberta -> DROP
-          if (dedosEstendidos >= 5) {
-            sendCommandToTetris("DROP");//comando q publica no FIFO
-            continue;
-          }
+            bool medio_flexionado    = distancia(palma, hand_landmarks.landmark(12)) < 0.15f;
+            bool anelar_flexionado   = distancia(palma, hand_landmarks.landmark(16)) < 0.15f;
+            bool minimo_flexionado   = distancia(palma, hand_landmarks.landmark(20)) < 0.15f;
 
-          // Gesto: mão fechada -> ROTATE
-          if (dedosEstendidos == 0) {
-            sendCommandToTetris("ROTATE");
-            continue;
-          }
-
-          // Gesto: apenas indicador estendido para esquerda/direita
-          if (palmaIndicador > 0.2f &&
-              palmaMedio < 0.1f &&
-              palmaAnelar < 0.1f &&
-              palmaMindinho < 0.1f) {
-            if (indicador.x() < palma.x() - 0.05f) {
-              sendCommandToTetris("LEFT");
-            } else if (indicador.x() > palma.x() + 0.05f) {
-              sendCommandToTetris("RIGHT");
+            if (indicador_estendido && polegar_estendido && polegar_lateral &&
+                medio_flexionado && anelar_flexionado && minimo_flexionado &&
+                canSend("ROTATE")) {
+                sendCommandToTetris("ROTATE");
+                std::cout << "🔄 Gesto detectado: ROTATE (L refinado)\n";
+                continue;
             }
-          }
+
+            // ---------- DROP ----------
+            int dedosEstendidos = 0;
+            auto palma_to_dedo = [&](int idx) {
+                return distancia(palma, hand_landmarks.landmark(idx)) > 0.2f;
+            };
+            if (palma_to_dedo(8)) dedosEstendidos++;
+            if (palma_to_dedo(12)) dedosEstendidos++;
+            if (palma_to_dedo(16)) dedosEstendidos++;
+            if (palma_to_dedo(20)) dedosEstendidos++;
+            if (palma_to_dedo(4))  dedosEstendidos++;
+
+            if (dedosEstendidos >= 5 && canSend("DROP")) {
+                sendCommandToTetris("DROP");
+                std::cout << "🟢 Gesto detectado: DROP\n";
+                continue;
+            }
+
+            // ---------- LEFT / RIGHT ----------
+            float indicadorX = indicador.x();
+            int targetColumn = static_cast<int>(indicadorX * totalColumns);
+            targetColumn = std::clamp(targetColumn, 0, totalColumns - 1);
+
+            if (targetColumn > currentPieceColumn) {
+                if (canSend("RIGHT")) {
+                    sendCommandToTetris("RIGHT");
+                    currentPieceColumn++;
+                    std::cout << "➡️ Enviando RIGHT para coluna " << currentPieceColumn << "\n";
+                }
+            } else if (targetColumn < currentPieceColumn) {
+                if (canSend("LEFT")) {
+                    sendCommandToTetris("LEFT");
+                    currentPieceColumn--;
+                    std::cout << "⬅️ Enviando LEFT para coluna " << currentPieceColumn << "\n";
+                }
+            }
         }
-      }
     }
+  }
+
+
+
+
 
     auto& output_frame = packet.Get<mediapipe::ImageFrame>();
 
