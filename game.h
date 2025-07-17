@@ -10,6 +10,7 @@ public:
     void Draw();
     void HandleInput();
     void MoveBlockDown();
+    bool inMenu;
     bool gameOver;
     int score;
     Music music;
