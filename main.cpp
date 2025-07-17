@@ -18,7 +18,7 @@ bool EventTriggered(double interval)
 
 int main()
 {
-    InitWindow(500, 620, "Tetris Computacional Vision");
+    InitWindow(500, 680, "Tetris Computacional Vision");
     SetTargetFPS(60);
 
     Font font = LoadFontEx("monogram.ttf", 64, 0, 0);
@@ -66,6 +66,7 @@ int main()
             DrawTextEx(font, scoreText, {320 + (170 - textSize.x) / 2, 65}, 38, 2, WHITE);
             DrawRectangleRounded({320, 215, 170, 180}, 0.3, 6, lightBlue);
             game.Draw();
+            DrawTextEx(font, ("COMANDO: " + game.lastCommand).c_str(), {30, 640}, 20, 2, WHITE);
             EndDrawing();
         }
     }

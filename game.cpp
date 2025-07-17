@@ -76,6 +76,9 @@ void Game::HandleInput()
     // Lê o próximo comando do FIFO, se disponível
     if (fifo.good() && std::getline(fifo, gesture)) {
         lastGesture = gesture;
+        if (gesture != "NOTHING") {
+            lastCommand = gesture;
+        }
     }
 
     int keyPressed = GetKeyPressed();

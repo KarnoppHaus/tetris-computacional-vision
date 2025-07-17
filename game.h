@@ -1,6 +1,7 @@
 #pragma once
 #include "grid.h"
 #include "blocks.cpp"
+#include <string>
 
 class Game
 {
@@ -11,6 +12,7 @@ public:
     void HandleInput();
     void MoveBlockDown();
     bool inMenu;
+    std::string lastCommand;
     bool gameOver;
     int score;
     Music music;
