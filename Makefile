@@ -9,9 +9,11 @@ MEDIAPIPE_GRAPH_CONFIG = mediapipe/graphs/hand_tracking/hand_tracking_desktop_li
 
 .PHONY: all run tetris mediapipe tmp run_mediapipe run_all clean kill_tetris
 
-# Compila o Tetris
+# Compila o Tetris com OpenCV e Raylib
 tetris:
-	g++ $(TETRIS_SRC) -o $(TETRIS_EXE) -lraylib
+	g++ $(TETRIS_SRC) -o $(TETRIS_EXE) -Wall -std=c++17 \
+		`pkg-config --cflags opencv4` -lraylib `pkg-config --libs opencv4` \
+		-lGL -lm -lpthread -ldl -lrt -lX11
 
 # Cria o FIFO (só se não existir)
 tmp:
@@ -29,7 +31,7 @@ run:
 # Executa o MediaPipe
 run_mediapipe:
 	cd $(MEDIAPIPE_DIR) && \
-	GLOG_logtostderr=1 \
+	LD_LIBRARY_PATH="" GLOG_logtostderr=1 \
 	bazel-bin/mediapipe/hand_tracking/hand_tracking/hand_tracking_cpu \
 	--calculator_graph_config_file=$(MEDIAPIPE_GRAPH_CONFIG)
 
@@ -40,11 +42,14 @@ all: tmp tetris
 run_all: all
 	@echo "Iniciando Tetris e MediaPipe..."
 	@echo "Pressione Ctrl+C para encerrar"
-	@./$(TETRIS_EXE) & echo $$! > $(PID_FILE)
-	@cd $(MEDIAPIPE_DIR) && \
-	GLOG_logtostderr=1 \
+	# inicia o Tetris e aguarda 1 segundo para garantir que ele conecte no socket
+	@./$(TETRIS_EXE) & \
+	sleep 1; \
+	cd $(MEDIAPIPE_DIR) && \
+	LD_LIBRARY_PATH="" GLOG_logtostderr=1 \
 	bazel-bin/mediapipe/hand_tracking/hand_tracking/hand_tracking_cpu \
 	--calculator_graph_config_file=$(MEDIAPIPE_GRAPH_CONFIG)
+
 
 # Mata o processo do Tetris se ainda estiver rodando
 kill_tetris:

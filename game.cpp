@@ -15,6 +15,7 @@ Game::Game()
     currentBlock = GetRandomBlock();
     nextBlock = GetRandomBlock();
     gameOver = false;
+    inMenu = true;
     score = 0;
 
     InitAudioDevice();
@@ -75,6 +76,9 @@ void Game::HandleInput()
     // Lê o próximo comando do FIFO, se disponível
     if (fifo.good() && std::getline(fifo, gesture)) {
         lastGesture = gesture;
+        if (gesture != "NOTHING") {
+            lastCommand = gesture;
+        }
     }
 
     int keyPressed = GetKeyPressed();
@@ -84,6 +88,11 @@ void Game::HandleInput()
         gameOver = false;
         Reset();
     }
+
+    if (inMenu == true && lastGesture == "ROTATE") {
+        inMenu = false;
+        Reset();
+    }    
 
     // Usa o comando recebido via FIFO (gestos)
     if (lastGesture == "LEFT") {
